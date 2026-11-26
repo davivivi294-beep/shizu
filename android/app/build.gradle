@@ -1,0 +1,13 @@
+plugins { id "com.android.application" version "8.7.3" }
+
+android {
+    namespace "app.shizu"
+    compileSdk 35
+    defaultConfig {
+        applicationId "app.shizu"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+}
