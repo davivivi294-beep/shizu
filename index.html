@@ -24,6 +24,8 @@
   <button id="mic" type="button" title="Falar">🎤</button>
   <button id="voz" type="button" title="Ler respostas em voz alta">🔇</button>
   <button id="limpar" type="button" title="Limpar conversa">🗑</button>
+  <button id="chaveVoz" type="button" title="Chave da ElevenLabs">Chave voz</button>
+  <select id="timbre" aria-label="Voz da ElevenLabs"></select>
   <button id="desfazer" title="Desfazer última mudança">↶</button>
 </nav>
 <div id="chat"></div>
@@ -229,12 +231,61 @@ async function conversar(texto) {
 }
 
 // ---------- voz ----------
-function falar(texto) {
+// ElevenLabs primeiro; se faltar chave ou cota, usa a voz do aparelho.
+const VOZES = [['cgSgspJ2msm6clMCkdW9', 'Jessica'], ['FGY2WhTYpPnrIDTdsKH5', 'Laura'], ['EXAVITQu4vr4xnSDxMaL', 'Sarah'],
+  ['XrExE9yKIg1WjnnlVkGX', 'Matilda'], ['Xb7hH8MSUJpSbSDYk0k2', 'Alice'], ['pFZP5JQG7iQjIQuC4Bku', 'Lily'], ['hpp4J3VqNfWAUOO0d1Us', 'Bella']];
+let audio, pedidoVoz = 0;
+
+function calar() {
+  pedidoVoz++;
+  audio?.pause();
+  window.speechSynthesis?.cancel();
+  window.ShizuNativo?.parar();
+}
+
+async function vozes() {
+  let lista = VOZES;
+  const k = localStorage.getItem('shizu_chave_voz');
+  if (k) {
+    try {
+      const r = await fetch('https://api.elevenlabs.io/v1/voices', {headers: {'xi-api-key': k}});
+      const femininas = (await r.json()).voices.filter(v => v.category === 'premade' && v.labels?.gender === 'female');
+      if (femininas.length) lista = femininas.map(v => [v.voice_id, v.name.split(' - ')[0]]);
+    } catch (e) { /* mantém a lista fixa */ }
+  }
+  const salva = ler('shizu_timbre', lista[0][0]);
+  const atual = lista.some(v => v[0] === salva) ? salva : lista[0][0];
+  salvar('shizu_timbre', atual);
+  $('timbre').replaceChildren(...lista.map(([id, nome]) => new Option(nome, id, false, id === atual)));
+}
+
+async function falar(texto) {
   if (!ler('shizu_voz', false)) return;
+  calar();
+  const meu = pedidoVoz;
   const limpo = texto.replace(/```[\s\S]*?```/g, ' código na tela. ').replace(/[*#`]/g, '');
+  const k = localStorage.getItem('shizu_chave_voz');
+  if (k) {
+    try {
+      const r = await fetch('https://api.elevenlabs.io/v1/text-to-speech/' + ler('shizu_timbre', VOZES[0][0]), {
+        method: 'POST',
+        headers: {'xi-api-key': k, 'Content-Type': 'application/json'},
+        // corta textos longos para poupar a cota gratuita
+        body: JSON.stringify({text: limpo.slice(0, 600), model_id: 'eleven_flash_v2_5', language_code: 'pt'}),
+      });
+      if (!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0, 150));
+      const som = await r.blob();
+      if (meu !== pedidoVoz) return;
+      if (audio) URL.revokeObjectURL(audio.src);
+      audio = new Audio(URL.createObjectURL(som));
+      return await audio.play();
+    } catch (e) {
+      if (meu !== pedidoVoz) return;
+      mostrar('ElevenLabs falhou (' + e.message + '). Usando a voz do aparelho.', 'acao');
+    }
+  }
   if (window.ShizuNativo) return ShizuNativo.falar(limpo);
   if (!window.speechSynthesis) return;
-  speechSynthesis.cancel();
   const fala = new SpeechSynthesisUtterance(limpo);
   fala.lang = 'pt-BR';
   speechSynthesis.speak(fala);
@@ -244,18 +295,18 @@ $('voz').onclick = () => {
   salvar('shizu_voz', !ler('shizu_voz', false));
   iconeVoz();
   if (ler('shizu_voz', false)) falar('Voz ligada. Infelizmente para você.');
-  else { window.speechSynthesis?.cancel(); window.ShizuNativo?.parar(); }
+  else calar();
 };
 iconeVoz();
 $('mic').onclick = () => {
   if (window.ShizuNativo) {
     window.shizuOuviu = texto => { $('entrada').value = texto; $('form').requestSubmit(); };
-    ShizuNativo.parar();
+    calar();
     return ShizuNativo.ouvir();
   }
   const Reconhecimento = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Reconhecimento) return mostrar('Este navegador não reconhece voz.', 'acao');
-  window.speechSynthesis?.cancel();
+  calar();
   const r = new Reconhecimento();
   r.lang = 'pt-BR';
   r.onresult = e => { $('entrada').value = e.results[0][0].transcript; $('form').requestSubmit(); };
@@ -264,6 +315,18 @@ $('mic').onclick = () => {
   $('status').textContent = 'OUVINDO';
   r.start();
 };
+$('timbre').onchange = e => { salvar('shizu_timbre', e.target.value); falar('Esta é a minha nova voz. Tente não se emocionar.'); };
+$('chaveVoz').onclick = async () => {
+  const k = prompt('Cole sua chave da ElevenLabs (fica só neste aparelho):');
+  if (!k) return;
+  localStorage.setItem('shizu_chave_voz', k.trim());
+  salvar('shizu_voz', true);
+  iconeVoz();
+  await vozes();
+  falar('Pronto. Agora eu tenho uma voz à altura do meu talento.');
+};
+vozes();
+
 $('limpar').onclick = () => {
   if ($('enviar').disabled || !confirm('Apagar a conversa e a memória?')) return;
   localStorage.removeItem('shizu_memoria');
@@ -321,7 +384,7 @@ const guardiao = (() => {
   };
   const get = (k, p) => JSON.parse(localStorage.getItem(k)) ?? p;
   const set = (k, v) => localStorage.setItem(k, JSON.stringify(v));
-  const arquivos = () => get('shizu3_arquivos', {});
+  const arquivos = () => get('shizu4_arquivos', {});
   const ler = nome => {
     const v = arquivos()[nome] ?? PADRAO[nome];
     if (v === undefined) throw new Error('Arquivo inexistente: ' + nome);
@@ -331,19 +394,19 @@ const guardiao = (() => {
     if (!Object.hasOwn(PADRAO, nome)) throw new Error('Só existem: ' + Object.keys(PADRAO).join(', '));
     if (nome === 'app.js') new Function(texto); // erro de sintaxe não é salvo
     if (nome === 'personalidades.json' && typeof JSON.parse(texto).padrao !== 'string') throw new Error("Falta 'padrao'");
-    set('shizu3_backups', [...get('shizu3_backups', []), {nome, texto: ler(nome)}].slice(-20));
-    set('shizu3_arquivos', {...arquivos(), [nome]: texto});
+    set('shizu4_backups', [...get('shizu4_backups', []), {nome, texto: ler(nome)}].slice(-20));
+    set('shizu4_arquivos', {...arquivos(), [nome]: texto});
   }
   function desfazer() {
-    const pilha = get('shizu3_backups', []);
+    const pilha = get('shizu4_backups', []);
     const b = pilha.pop();
     if (!b) return 'Não há backup para restaurar.';
-    set('shizu3_arquivos', {...arquivos(), [b.nome]: b.texto});
-    set('shizu3_backups', pilha);
+    set('shizu4_arquivos', {...arquivos(), [b.nome]: b.texto});
+    set('shizu4_backups', pilha);
     return 'Restaurei ' + b.nome + '.';
   }
   return Object.freeze({ler, escrever, desfazer, listar: () => Object.keys(PADRAO),
-    fabrica: () => { localStorage.removeItem('shizu3_arquivos'); localStorage.removeItem('shizu3_backups'); }});
+    fabrica: () => { localStorage.removeItem('shizu4_arquivos'); localStorage.removeItem('shizu4_backups'); }});
 })();
 
 (() => {
